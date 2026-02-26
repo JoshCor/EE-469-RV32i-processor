@@ -32,6 +32,17 @@ module core(
     );
 
 
+// Pipeline Stage Registers
+buffer_fetch_to_decode    f_d_reg;
+buffer_decode_to_exec     d_ex_reg;
+buffer_exec_to_mem        ex_mem_reg;
+buffer_mem_to_writeback   mem_wb_reg;
+
+// "Next" signals (combinational logic outputs)
+buffer_fetch_to_decode    f_d_next;
+buffer_decode_to_exec     d_ex_next;
+buffer_exec_to_mem        ex_mem_next;
+buffer_mem_to_writeback   mem_wb_next;
 
 typedef enum {
     stage_fetch
@@ -61,11 +72,7 @@ end
 instr32    fetched_instruction;
 assign fetched_instruction = (inst_mem_rsp.valid) ? inst_mem_rsp.data : latched_instruction_read;
 
-/*
-
-  Instruction decode
-
-*/
+//decode
 tag     rs1;
 tag     rs2;
 word    rd1;
@@ -131,12 +138,8 @@ always_comb begin
     end
 end
 
-/*
 
- Instruction execute
-
- */
-
+//exec
 always_comb begin
     if (rs1 == `tag_size'd0)
         rd1 = `word_size'd0;
@@ -171,12 +174,7 @@ always_ff @(posedge clk) begin
     end
 end
 
-/*
-
-  Stage and mem
-
- */
-
+//mem
 always_comb begin
     data_mem_req = memory_io_no_req32;
 
@@ -200,6 +198,7 @@ always_ff @(posedge clk) begin
         load_result <= data_mem_rsp.data;
 end
 
+//writeback
 always_comb begin
     if (op_q == q_load)
         writeback_data = subset_load_data(
@@ -225,11 +224,6 @@ always_ff @(posedge clk) begin
     end
 end
 
-/*
-
- Buffer Registers
-
- */
 //fetch to decode buffer
 typedef struct packed {
     word pc;
@@ -255,6 +249,7 @@ typedef struct packed {
 typedef struct packed {
     word     pc;
     word     exec_result;
+    word     next_pc;
     word     rd2;             // Data to be stored (for q_store)
     tag      rd;
     opcode_q op_q;
@@ -267,32 +262,34 @@ typedef struct packed {
 typedef struct packed {
     word     pc;
     word     writeback_data;  // Final value (ALU result or Load result)
+    word     next_pc;
     tag      rd;
     logic    writeback_valid;
     logic    valid;
 } buffer_mem_to_writeback;
 
 
+//advance stages:
 always_ff @(posedge clk) begin
-    if (reset)
-        current_stage <= stage_fetch;
-    else begin
-        case (current_stage)
-            stage_fetch:
-                if (inst_mem_rsp.valid)
-                    current_stage <= stage_decode;
-            stage_decode:
-                current_stage <= stage_execute;
-            stage_execute:
-                current_stage <= stage_mem;
-            stage_mem:
-                current_stage <= stage_writeback;
-            stage_writeback:
-                if (memory_stage_complete)
-                    current_stage <= stage_fetch;
-            default:
-                current_stage <= stage_fetch;
-        endcase
+    if (reset) begin
+        f_d_reg    <= '0;
+        d_ex_reg   <= '0;
+        ex_mem_reg <= '0;
+        mem_wb_reg <= '0;
+        pc         <= reset_pc;
+        instruction_count <= 0;
+    end else begin
+        f_d_reg    <= f_d_next;
+        d_ex_reg   <= d_ex_next;
+        ex_mem_reg <= ex_mem_next;
+        mem_wb_reg <= mem_wb_next;
+
+        pc <= next_pc; 
+
+        // Increment count every time a valid instruction hits Writeback
+        if (mem_wb_reg.valid) begin
+            instruction_count <= instruction_count + 1;
+        end
     end
 end
 
