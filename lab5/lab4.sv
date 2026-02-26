@@ -178,14 +178,6 @@ end
  */
 
 always_comb begin
-    /*
-    data_mem_req.valid = false;
-    data_mem_req.do_read = {(`word_address_size/8){1'b0}};
-    data_mem_req.do_write = {(`word_address_size/8){1'b0}};
-    data_mem_req.addr = {(`word_address_size){1'b0}};
-    data_mem_req.data = {(`word_size){1'b0}};
-    */
-    // This effectively does the above.  The above is there for documentation
     data_mem_req = memory_io_no_req32;
 
     if (data_mem_rsp.ready && current_stage == stage_mem && (op_q == q_store || op_q == q_load)) begin
@@ -235,9 +227,52 @@ end
 
 /*
 
- Stage control
+ Buffer Registers
 
  */
+//fetch to decode buffer
+typedef struct packed {
+    word pc;
+    instr32 inst;
+    bool valid;
+} buffer_fetch_to_decode;
+
+//decode to execute buffer
+typedef struct packed {
+    word     pc;
+    word     rd1;
+    word     rd2;
+    word     imm;
+    tag      rd;
+    opcode_q op_q;
+    funct3   f3;
+    funct7   f7;
+    logic    writeback_valid; // Does this instruction eventually write to reg_file?
+    logic    valid;
+} buffer_decode_to_exec;
+
+//exec to mem buffer
+typedef struct packed {
+    word     pc;
+    word     exec_result;
+    word     rd2;             // Data to be stored (for q_store)
+    tag      rd;
+    opcode_q op_q;
+    funct3   f3;
+    logic    writeback_valid;
+    logic    valid;
+} buffer_exec_to_mem;
+
+//mem to writeback buffer
+typedef struct packed {
+    word     pc;
+    word     writeback_data;  // Final value (ALU result or Load result)
+    tag      rd;
+    logic    writeback_valid;
+    logic    valid;
+} buffer_mem_to_writeback;
+
+
 always_ff @(posedge clk) begin
     if (reset)
         current_stage <= stage_fetch;
