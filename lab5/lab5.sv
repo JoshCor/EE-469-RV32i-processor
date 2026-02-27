@@ -72,8 +72,10 @@ typedef struct packed {
     word     pc;
     tag      rd;
     logic    writeback_valid;
-    logic    valid;
+    opcode_q op_q;
     word     exec_result;
+    funct3   f3;
+    logic    valid;
 } buffer_mem_to_writeback;
 
 // Pipeline Stage Registers
@@ -185,6 +187,7 @@ always_comb begin
     mem_wb_next.writeback_valid = ex_mem_reg.writeback_valid;
     mem_wb_next.op_q            = ex_mem_reg.op_q;
     mem_wb_next.exec_result     = ex_mem_reg.exec_result; 
+    mem_wb_next.f3              = ex_mem_reg.f3;
     mem_wb_next.valid           = ex_mem_reg.valid;
 end
 
@@ -223,6 +226,9 @@ always_ff @(posedge clk) begin
         pc         <= reset_pc;
         pc_requested <= reset_pc;
         instruction_count <= 0;
+        for (int i = 0; i < 32; i++) begin
+            reg_file[i] <= 32'd0;
+        end
     end else begin
         f_d_reg    <= f_d_next;
         d_ex_reg   <= d_ex_next;
@@ -232,8 +238,9 @@ always_ff @(posedge clk) begin
         //speculative jump
         pc <= next_pc;
         pc_requested <= pc;
-
-        // Increment count every time a valid instruction hits Writeback
+        //reg_data();
+        debug();
+        
         if (mem_wb_reg.valid) begin
             instruction_count <= instruction_count + 1;
         end
@@ -243,14 +250,8 @@ end
 
 
 function automatic void debug();
-        $display(
-            "%x       mem req: %0x, mem rsp data: %0x, mem rsp addr: %0x", current_stage, inst_mem_req, inst_mem_rsp.data, inst_mem_rsp.addr);
-        $display(
-            "data mem req addr: %0x, data mem rsp data: %0x, mem rsp addr: %0x, mem req valid: %0x, mem rsp valid: %0x, writeback valid: %0x, writeback data: %0x, execute result: %0x, rs1_data: %0x, rs2_data: %0x", 
-            data_mem_req.addr, data_mem_rsp.data, data_mem_rsp.addr, 
-            data_mem_req.valid, data_mem_rsp.valid, writeback_valid, 
-            writeback_data, exec_result, reg_file_rd1, reg_file_rd2);
-        print_instruction(pc, fetched_instruction);
+    $display("WB Stage: PC=%h, RD=%d, Op=%b, Data=%h, WB_Valid=%b", 
+          mem_wb_reg.pc, mem_wb_reg.rd, mem_wb_reg.op_q, writeback_data, mem_wb_reg.writeback_valid);
 endfunction
 
 function automatic void reg_data();
