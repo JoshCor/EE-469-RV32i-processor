@@ -31,6 +31,50 @@ module core(
     ,input  memory_io_rsp   data_mem_rsp
     );
 
+localparam instr32 noop = 32'h00000013;
+
+//fetch to decode buffer
+typedef struct packed {
+    word pc;
+    instr32 inst;
+    logic valid;
+} buffer_fetch_to_decode;
+
+//decode to execute buffer
+typedef struct packed {
+    word     pc;
+    word     rd1;
+    word     rd2;
+    word     imm;
+    tag      rd;
+    opcode_q op_q;
+    funct3   f3;
+    funct7   f7;
+    logic    writeback_valid; 
+    logic    valid;
+} buffer_decode_to_exec;
+
+//exec to mem buffer
+typedef struct packed {
+    word     pc;
+    word     exec_result;
+    word     next_pc;
+    word     rd2;            
+    tag      rd;
+    opcode_q op_q;
+    funct3   f3;
+    logic    writeback_valid;
+    logic    valid;
+} buffer_exec_to_mem;
+
+//mem to writeback buffer
+typedef struct packed {
+    word     pc;
+    tag      rd;
+    logic    writeback_valid;
+    logic    valid;
+    word     exec_result;
+} buffer_mem_to_writeback;
 
 // Pipeline Stage Registers
 buffer_fetch_to_decode    f_d_reg;
@@ -44,229 +88,129 @@ buffer_decode_to_exec     d_ex_next;
 buffer_exec_to_mem        ex_mem_next;
 buffer_mem_to_writeback   mem_wb_next;
 
-typedef enum {
-    stage_fetch
-    ,stage_decode
-    ,stage_execute
-    ,stage_mem
-    ,stage_writeback
-}   stage;
-
-stage   current_stage;
-
 
 word_address    pc;
+word_address    pc_requested;
+word_address    next_pc;
+word            reg_file[0:31];
+word            instruction_count /*verilator public*/;
+word            writeback_data;
 
-assign inst_mem_req.addr = pc;
-assign inst_mem_req.valid = inst_mem_rsp.ready && (stage_fetch == current_stage);
-assign inst_mem_req.do_read = (stage_fetch == current_stage) ? 4'b1111 : 0;
+//fetch
+always_comb begin
+    next_pc = pc + 32'd4; 
 
-instr32    latched_instruction_read;
-always_ff @(posedge clk) begin
-    if (inst_mem_rsp.valid) begin
-        latched_instruction_read <= inst_mem_rsp.data;
-    end
+    inst_mem_req.addr    = pc;
+    inst_mem_req.valid   = !reset; 
+    inst_mem_req.do_read = 4'b1111;
 
+    f_d_next.pc    = pc_requested;
+    f_d_next.inst  = (inst_mem_rsp.valid) ? inst_mem_rsp.data : noop;
+    f_d_next.valid = inst_mem_rsp.valid && !reset;
 end
-
-instr32    fetched_instruction;
-assign fetched_instruction = (inst_mem_rsp.valid) ? inst_mem_rsp.data : latched_instruction_read;
 
 //decode
-tag     rs1;
-tag     rs2;
-word    rd1;
-word    rd2;
-tag     rd;
-word    writeback_data;
-logic   writeback_valid;
-word    reg_file_rd1;
-word    reg_file_rd2;
-word    imm;
-funct3  f3;
-funct7  f7;
-opcode_q op_q;
-instr_format format;
-bool     is_memory_op;
-
-word    reg_file[0:31];
-
 always_comb begin
-    rs1 = decode_rs1(fetched_instruction);
-    rs2 = decode_rs2(fetched_instruction);
-    rd = decode_rd(fetched_instruction);
-    f3 = decode_funct3(fetched_instruction);
-    op_q = decode_opcode_q(fetched_instruction);
-    format = decode_format(op_q);
-    imm = decode_imm(fetched_instruction, format);
-    writeback_valid = decode_writeback(op_q);
-    f7 = decode_funct7(fetched_instruction, format);
-end
-
-logic read_reg_valid;
-logic write_reg_valid;
-
-always_ff @(posedge clk) begin
-    if (read_reg_valid) begin
-        reg_file_rd1 <= reg_file[rs1];
-        reg_file_rd2 <= reg_file[rs2];
-    end
-    if (write_reg_valid)
-        reg_file[rd] <= writeback_data;
-end
-
-logic memory_stage_complete;
-always_comb begin
-    if (op_q == q_load || op_q == q_store) begin
-        if (data_mem_rsp.valid)
-            memory_stage_complete = true;
-        else
-            memory_stage_complete = false;
-    end else
-        memory_stage_complete = true;
-end
-
-always_comb begin
-    read_reg_valid = false;
-    write_reg_valid = false;
-    if (current_stage == stage_decode) begin
-        read_reg_valid = true;
-    end
-
-    if (memory_stage_complete && current_stage == stage_writeback && writeback_valid) begin
-        write_reg_valid = true;
-    end
+    instr32 inst = f_d_reg.inst;
+    tag rs1_tag = decode_rs1(inst);
+    tag rs2_tag = decode_rs2(inst);
+    opcode_q op_q_dec = decode_opcode_q(inst);
+    instr_format fmt  = decode_format(op_q_dec);
+    d_ex_next.pc              = f_d_reg.pc;
+    d_ex_next.rd1             = (rs1_tag == 5'd0) ? 32'd0 : reg_file[rs1_tag];
+    d_ex_next.rd2             = (rs2_tag == 5'd0) ? 32'd0 : reg_file[rs2_tag];
+    d_ex_next.imm             = decode_imm(inst, fmt);
+    d_ex_next.rd              = decode_rd(inst);
+    d_ex_next.op_q            = op_q_dec;
+    d_ex_next.f3              = decode_funct3(inst);
+    d_ex_next.f7              = decode_funct7(inst, fmt);
+    d_ex_next.writeback_valid = decode_writeback(op_q_dec);
+    d_ex_next.valid           = f_d_reg.valid;
 end
 
 
 //exec
 always_comb begin
-    if (rs1 == `tag_size'd0)
-        rd1 = `word_size'd0;
-    else
-        rd1 = reg_file_rd1;        
-    if (rs2 == `tag_size'd0)
-        rd2 = `word_size'd0;
-    else
-        rd2 = reg_file_rd2;        
-end
+    ext_operand exec_result_comb = execute(
+        cast_to_ext_operand(d_ex_reg.rd1),
+        cast_to_ext_operand(d_ex_reg.rd2),
+        cast_to_ext_operand(d_ex_reg.imm),
+        d_ex_reg.pc,
+        d_ex_reg.op_q,
+        d_ex_reg.f3,
+        d_ex_reg.f7
+    );
 
-ext_operand exec_result_comb;
-word next_pc_comb;
-always_comb begin
-    exec_result_comb = execute(
-        cast_to_ext_operand(rd1),
-        cast_to_ext_operand(rd2),
-        cast_to_ext_operand(imm),
-        pc,
-        op_q,
-        f3,
-        f7);
-    next_pc_comb = get_next_pc(pc, imm, rd1, op_q, exec_result_comb[0]);
-end
+    //will need to capture this later for branching
+    word next_pc_comb = get_next_pc(
+        d_ex_reg.pc, 
+        d_ex_reg.imm, 
+        d_ex_reg.rd1, 
+        d_ex_reg.op_q, 
+        exec_result_comb[0] 
+    );
 
-word exec_result;
-word next_pc;
-always_ff @(posedge clk) begin
-    if (current_stage == stage_execute) begin
-        exec_result <= exec_result_comb[`word_size-1:0];
-        next_pc <= next_pc_comb;
-    end
+    ex_mem_next.exec_result     = exec_result_comb[`word_size-1:0];
+    ex_mem_next.rd2             = d_ex_reg.rd2; 
+    ex_mem_next.rd              = d_ex_reg.rd;
+    ex_mem_next.op_q            = d_ex_reg.op_q;
+    ex_mem_next.f3              = d_ex_reg.f3;
+    ex_mem_next.writeback_valid = d_ex_reg.writeback_valid;
+    ex_mem_next.next_pc         = next_pc_comb;
+    ex_mem_next.pc              = d_ex_reg.pc; 
+    ex_mem_next.valid           = d_ex_reg.valid;
 end
 
 //mem
 always_comb begin
     data_mem_req = memory_io_no_req32;
 
-    if (data_mem_rsp.ready && current_stage == stage_mem && (op_q == q_store || op_q == q_load)) begin
-        data_mem_req.addr = exec_result[`word_address_size - 1:0];
-        if (op_q == q_store) begin
-            data_mem_req.valid = true;
-            data_mem_req.do_write = shuffle_store_mask(memory_mask(cast_to_memory_op(f3)), exec_result);
-            data_mem_req.data = shuffle_store_data(rd2, exec_result);
-        end else
-        if (op_q == q_load) begin
-            data_mem_req.valid = true;
-            data_mem_req.do_read = shuffle_store_mask(memory_mask(cast_to_memory_op(f3)), exec_result);
+    // 2. Outbound Request (Combinational)
+    // We send a request if the instruction in EX_MEM is valid and is a Load/Store
+    if (ex_mem_reg.valid && (ex_mem_reg.op_q == q_store || ex_mem_reg.op_q == q_load)) begin
+        data_mem_req.valid = 1'b1;
+        data_mem_req.addr  = ex_mem_reg.exec_result[`word_address_size - 1:0];
+        
+        if (ex_mem_reg.op_q == q_store) begin
+            data_mem_req.do_write = shuffle_store_mask(memory_mask(cast_to_memory_op(ex_mem_reg.f3)), ex_mem_reg.exec_result);
+            data_mem_req.data     = shuffle_store_data(ex_mem_reg.rd2, ex_mem_reg.exec_result);
+        end else begin
+            data_mem_req.do_read  = shuffle_store_mask(memory_mask(cast_to_memory_op(ex_mem_reg.f3)), ex_mem_reg.exec_result);
         end
     end
-end
 
-word load_result;
-always_ff @(posedge clk) begin
-    if (data_mem_rsp.valid)
-        load_result <= data_mem_rsp.data;
+    // 3. Prepare WB Buffer (Pass-through)
+    // We don't process the load data here because it hasn't arrived yet!
+    mem_wb_next.rd              = ex_mem_reg.rd;
+    mem_wb_next.writeback_valid = ex_mem_reg.writeback_valid;
+    mem_wb_next.op_q            = ex_mem_reg.op_q;
+    mem_wb_next.exec_result     = ex_mem_reg.exec_result; 
+    mem_wb_next.valid           = ex_mem_reg.valid;
 end
 
 //writeback
 always_comb begin
-    if (op_q == q_load)
+    if (mem_wb_reg.op_q == q_load) begin
         writeback_data = subset_load_data(
-                    shuffle_load_data(data_mem_rsp.valid ? data_mem_rsp.data : load_result, exec_result),
-                    cast_to_memory_op(f3));
-    
-    else
-        writeback_data = exec_result;
-
-end
-
-word instruction_count /*verilator public*/;
-always_ff @(posedge clk) begin
-    if (reset) begin
-        pc <= reset_pc;
-        instruction_count <= 0;
+            shuffle_load_data(data_mem_rsp.data, mem_wb_reg.exec_result),
+            cast_to_memory_op(mem_wb_reg.f3)
+        );
     end else begin
-        if (current_stage == stage_writeback) begin
-            pc <= next_pc;
-            instruction_count <= instruction_count + 1;
-
-        end
+        // For add, sub, etc., just pass the ALU result stored in the buffer
+        writeback_data = mem_wb_reg.exec_result;
     end
 end
 
-//fetch to decode buffer
-typedef struct packed {
-    word pc;
-    instr32 inst;
-    bool valid;
-} buffer_fetch_to_decode;
-
-//decode to execute buffer
-typedef struct packed {
-    word     pc;
-    word     rd1;
-    word     rd2;
-    word     imm;
-    tag      rd;
-    opcode_q op_q;
-    funct3   f3;
-    funct7   f7;
-    logic    writeback_valid; // Does this instruction eventually write to reg_file?
-    logic    valid;
-} buffer_decode_to_exec;
-
-//exec to mem buffer
-typedef struct packed {
-    word     pc;
-    word     exec_result;
-    word     next_pc;
-    word     rd2;             // Data to be stored (for q_store)
-    tag      rd;
-    opcode_q op_q;
-    funct3   f3;
-    logic    writeback_valid;
-    logic    valid;
-} buffer_exec_to_mem;
-
-//mem to writeback buffer
-typedef struct packed {
-    word     pc;
-    word     writeback_data;  // Final value (ALU result or Load result)
-    word     next_pc;
-    tag      rd;
-    logic    writeback_valid;
-    logic    valid;
-} buffer_mem_to_writeback;
+//regfile update
+always_ff @(posedge clk) begin
+    if (reset) begin
+    end else begin
+        // ONLY write if the instruction is valid and it's a type that writes to RD
+        if (mem_wb_reg.valid && mem_wb_reg.writeback_valid && mem_wb_reg.rd != 0) begin
+            reg_file[mem_wb_reg.rd] <= writeback_data;
+        end
+    end
+end
 
 
 //advance stages:
@@ -277,6 +221,7 @@ always_ff @(posedge clk) begin
         ex_mem_reg <= '0;
         mem_wb_reg <= '0;
         pc         <= reset_pc;
+        pc_requested <= reset_pc;
         instruction_count <= 0;
     end else begin
         f_d_reg    <= f_d_next;
@@ -284,7 +229,9 @@ always_ff @(posedge clk) begin
         ex_mem_reg <= ex_mem_next;
         mem_wb_reg <= mem_wb_next;
 
-        pc <= next_pc; 
+        //speculative jump
+        pc <= next_pc;
+        pc_requested <= pc;
 
         // Increment count every time a valid instruction hits Writeback
         if (mem_wb_reg.valid) begin
