@@ -239,7 +239,8 @@ always_ff @(posedge clk) begin
         pc <= next_pc;
         pc_requested <= pc;
         //reg_data();
-        debug();
+        //debug();
+        debug_flag();
         
         if (mem_wb_reg.valid) begin
             instruction_count <= instruction_count + 1;
@@ -271,7 +272,7 @@ function automatic void reg_data();
 endfunction
 
 function automatic void debug_flag();
-    $display("\n\n\nHERE\n\n\n");
+    $display("\nHERE\n");
 endfunction
 
 
