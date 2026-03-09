@@ -46,6 +46,8 @@ typedef struct packed {
     word     rd1;
     word     rd2;
     word     imm;
+    tag      rs1;
+    tag      rs2;
     tag      rd;
     opcode_q op_q;
     funct3   f3;
@@ -58,6 +60,7 @@ typedef struct packed {
 typedef struct packed {
     word     pc;
     word     exec_result;
+    logic    branch_taken;
     word     next_pc;
     word     rd2;            
     tag      rd;
@@ -122,6 +125,8 @@ always_comb begin
     d_ex_next.rd1             = (rs1_tag == 5'd0) ? 32'd0 : reg_file[rs1_tag];
     d_ex_next.rd2             = (rs2_tag == 5'd0) ? 32'd0 : reg_file[rs2_tag];
     d_ex_next.imm             = decode_imm(inst, fmt);
+    d_ex_next.rs1             = rs1_tag;
+    d_ex_next.rs2             = rs2_tag;
     d_ex_next.rd              = decode_rd(inst);
     d_ex_next.op_q            = op_q_dec;
     d_ex_next.f3              = decode_funct3(inst);
@@ -160,6 +165,7 @@ always_comb begin
     ex_mem_next.writeback_valid = d_ex_reg.writeback_valid;
     ex_mem_next.next_pc         = next_pc_comb;
     ex_mem_next.pc              = d_ex_reg.pc; 
+    ex_mem_next.branch_taken    = (next_pc_comb != d_ex_reg.pc + 4);
     ex_mem_next.valid           = d_ex_reg.valid;
 end
 
@@ -224,22 +230,42 @@ always_ff @(posedge clk) begin
             reg_file[i] <= 32'd0;
         end
     end else begin
-        f_d_reg    <= f_d_next;
-        d_ex_reg   <= d_ex_next;
-        ex_mem_reg <= ex_mem_next;
-        mem_wb_reg <= mem_wb_next;
-
-        //speculative jump
-        pc <= next_pc;
-        pc_requested <= pc;
+        //branch flush
+        if (d_ex_reg.valid && ex_mem_next.next_pc != d_ex_reg.pc + 4) begin
+            f_d_reg    <= '0;
+            d_ex_reg   <= '0;
+            ex_mem_reg <= ex_mem_next;
+            mem_wb_reg <= mem_wb_next;
+            pc <= ex_mem_next.next_pc; // next pc is just pc + 4 always, so this is needed
+            pc_requested <= pc;
+        //memory read bubble
+        end else if (d_ex_reg.op_q == q_load && d_ex_reg.writeback_valid &&
+                     d_ex_reg.rd != 0 && (d_ex_reg.rd == d_ex_next.rs1 || d_ex_reg.rd == d_ex_next.rs2)) begin
+            f_d_reg    <= f_d_reg;
+            d_ex_reg   <= d_ex_reg;
+            ex_mem_reg <= '0;
+            mem_wb_reg <= mem_wb_next;
+            pc <= pc;
+            pc_requested <= pc_requested;
+        //normal
+        end else begin
+            f_d_reg    <= f_d_next;
+            d_ex_reg   <= d_ex_next;
+            ex_mem_reg <= ex_mem_next;
+            mem_wb_reg <= mem_wb_next;
+            //speculative jump
+            pc <= next_pc;
+            pc_requested <= pc;
+        end
+        end
         //reg_data();
         //debug();
         debug_flag();
-        
-        if (mem_wb_reg.valid) begin
+        if (mem_wb_reg.valid)
             instruction_count <= instruction_count + 1;
+        if (d_ex_reg.valid && ex_mem_next.next_pc != d_ex_reg.pc + 4)
+            instruction_count <= instruction_count - 2;
         end
-    end
 end
 
 
