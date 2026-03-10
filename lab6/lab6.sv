@@ -100,27 +100,36 @@ word_address    next_pc;
 word            reg_file[0:31];
 word            instruction_count /*verilator public*/;
 word            writeback_data;
+tag             rs1_tag;
+tag             rs2_tag;
+
+
 
 //fetch
+//logic to allow mem stall
+logic load_use_stall;
+assign load_use_stall = (d_ex_reg.op_q == q_load && d_ex_reg.writeback_valid &&
+                         d_ex_reg.rd != 0 &&
+                        (d_ex_reg.rd == d_ex_next.rs1 || d_ex_reg.rd == d_ex_next.rs2));
 always_comb begin
     next_pc = pc + 32'd4; 
 
     inst_mem_req.addr    = pc;
-    inst_mem_req.valid   = !reset; 
+    inst_mem_req.valid   = !reset && !load_use_stall; 
     inst_mem_req.do_read = 4'b1111;
 
     f_d_next.pc    = pc_requested;
-    f_d_next.inst  = (inst_mem_rsp.valid) ? inst_mem_rsp.data : noop;
-    f_d_next.valid = inst_mem_rsp.valid && !reset;
+    f_d_next.inst  = (inst_mem_rsp.valid && !load_use_stall) ? inst_mem_rsp.data : noop;
+    f_d_next.valid = inst_mem_rsp.valid && !reset && !load_use_stall;
 end
 
 //decode
 always_comb begin
     instr32 inst = f_d_reg.inst;
-    tag rs1_tag = decode_rs1(inst);
-    tag rs2_tag = decode_rs2(inst);
     opcode_q op_q_dec = decode_opcode_q(inst);
     instr_format fmt  = decode_format(op_q_dec);
+    rs1_tag = decode_rs1(inst);
+    rs2_tag = decode_rs2(inst);
     d_ex_next.pc              = f_d_reg.pc;
     d_ex_next.rd1             = (rs1_tag == 5'd0) ? 32'd0 : reg_file[rs1_tag];
     d_ex_next.rd2             = (rs2_tag == 5'd0) ? 32'd0 : reg_file[rs2_tag];
@@ -133,14 +142,35 @@ always_comb begin
     d_ex_next.f7              = decode_funct7(inst, fmt);
     d_ex_next.writeback_valid = decode_writeback(op_q_dec);
     d_ex_next.valid           = f_d_reg.valid;
+    //bypassing wb to d
+    if (mem_wb_reg.valid && mem_wb_reg.writeback_valid && mem_wb_reg.rd != 0) begin
+        if (mem_wb_reg.rd == rs1_tag) d_ex_next.rd1 = writeback_data;
+        if (mem_wb_reg.rd == rs2_tag) d_ex_next.rd2 = writeback_data;
+    end
 end
 
 
 //exec
 always_comb begin
-    ext_operand exec_result_comb = execute(
-        cast_to_ext_operand(d_ex_reg.rd1),
-        cast_to_ext_operand(d_ex_reg.rd2),
+    ext_operand exec_result_comb;
+    word next_pc_comb;
+    //bypassing wb to exec and mem to exec
+    word bypassed_rd1 = d_ex_reg.rd1;
+    word bypassed_rd2 = d_ex_reg.rd2;
+    
+    if(mem_wb_reg.writeback_valid && mem_wb_reg.valid && mem_wb_reg.rd != 0) begin
+        bypassed_rd1 = (mem_wb_reg.rd == d_ex_reg.rs1)? writeback_data : bypassed_rd1;
+        bypassed_rd2 = (mem_wb_reg.rd == d_ex_reg.rs2)? writeback_data: bypassed_rd2;
+    end
+    if(ex_mem_reg.writeback_valid && ex_mem_reg.valid && ex_mem_reg.rd != 0) begin
+        bypassed_rd1 = (ex_mem_reg.rd == d_ex_reg.rs1)? ex_mem_reg.exec_result : bypassed_rd1;
+        bypassed_rd2 = (ex_mem_reg.rd == d_ex_reg.rs2)? ex_mem_reg.exec_result : bypassed_rd2;
+    end
+    
+
+    exec_result_comb = execute(
+        cast_to_ext_operand(bypassed_rd1),
+        cast_to_ext_operand(bypassed_rd2),
         cast_to_ext_operand(d_ex_reg.imm),
         d_ex_reg.pc,
         d_ex_reg.op_q,
@@ -149,16 +179,16 @@ always_comb begin
     );
 
     //will need to capture this later for branching
-    word next_pc_comb = get_next_pc(
+    next_pc_comb = get_next_pc(
         d_ex_reg.pc, 
         d_ex_reg.imm, 
-        d_ex_reg.rd1, 
+        bypassed_rd1, 
         d_ex_reg.op_q, 
         exec_result_comb[0] 
     );
 
     ex_mem_next.exec_result     = exec_result_comb[`word_size-1:0];
-    ex_mem_next.rd2             = d_ex_reg.rd2; 
+    ex_mem_next.rd2             = bypassed_rd2; 
     ex_mem_next.rd              = d_ex_reg.rd;
     ex_mem_next.op_q            = d_ex_reg.op_q;
     ex_mem_next.f3              = d_ex_reg.f3;
@@ -238,18 +268,17 @@ always_ff @(posedge clk) begin
             mem_wb_reg <= mem_wb_next;
             pc <= ex_mem_next.next_pc; // next pc is just pc + 4 always, so this is needed
             pc_requested <= pc;
-        //memory read bubble
-        end else if (d_ex_reg.op_q == q_load && d_ex_reg.writeback_valid &&
-                     d_ex_reg.rd != 0 && (d_ex_reg.rd == d_ex_next.rs1 || d_ex_reg.rd == d_ex_next.rs2)) begin
+        //memory stall
+        end else if (load_use_stall) begin
             f_d_reg    <= f_d_reg;
-            d_ex_reg   <= d_ex_reg;
-            ex_mem_reg <= '0;
+            d_ex_reg   <= '0;
+            ex_mem_reg <= ex_mem_next;
             mem_wb_reg <= mem_wb_next;
-            pc <= pc;
+            pc <= pc_requested + 4; // hold pc properly
             pc_requested <= pc_requested;
         //normal
         end else begin
-            f_d_reg    <= f_d_next;
+            f_d_reg    <= f_d_next.valid ? f_d_next : f_d_reg; //recover from mem stall
             d_ex_reg   <= d_ex_next;
             ex_mem_reg <= ex_mem_next;
             mem_wb_reg <= mem_wb_next;
@@ -257,15 +286,26 @@ always_ff @(posedge clk) begin
             pc <= next_pc;
             pc_requested <= pc;
         end
-        end
         //reg_data();
         //debug();
-        debug_flag();
+        //debug_flag();
         if (mem_wb_reg.valid)
             instruction_count <= instruction_count + 1;
         if (d_ex_reg.valid && ex_mem_next.next_pc != d_ex_reg.pc + 4)
             instruction_count <= instruction_count - 2;
-        end
+    end
+end
+
+always_ff @(posedge clk) begin
+    if (mem_wb_reg.valid && mem_wb_reg.op_q == q_load)
+        $display("LOAD WB: addr=%h, raw_data=%h, writeback_data=%h",
+            mem_wb_reg.exec_result, data_mem_rsp.data, writeback_data);
+    $display("PC=%h pc_req=%h | FD=%h(%b) | DE op=%b rd=%d wbv=%b valid=%b | EM valid=%b | MW valid=%b",
+        pc, pc_requested,
+        f_d_reg.inst, f_d_reg.valid,
+        d_ex_reg.op_q, d_ex_reg.rd, d_ex_reg.writeback_valid, d_ex_reg.valid,
+        ex_mem_reg.valid,
+        mem_wb_reg.valid);
 end
 
 
