@@ -95,32 +95,37 @@ buffer_mem_to_writeback   mem_wb_next;
 
 
 word_address    pc;
-word_address    pc_requested;
 word_address    next_pc;
 word            reg_file[0:31];
 word            instruction_count /*verilator public*/;
 word            writeback_data;
 tag             rs1_tag;
 tag             rs2_tag;
+logic           load_use_stall;
+logic           branch_flush;
 
+assign load_use_stall = (d_ex_reg.valid && d_ex_reg.op_q == q_load && d_ex_reg.writeback_valid &&
+                         d_ex_reg.rd != 0 &&
+                        (d_ex_reg.rd == d_ex_next.rs1 || d_ex_reg.rd == d_ex_next.rs2));
+assign branch_flush = (d_ex_reg.valid && ex_mem_next.next_pc != d_ex_reg.pc + 4);
 
 
 //fetch
-//logic to allow mem stall
-logic load_use_stall;
-assign load_use_stall = (d_ex_reg.op_q == q_load && d_ex_reg.writeback_valid &&
-                         d_ex_reg.rd != 0 &&
-                        (d_ex_reg.rd == d_ex_next.rs1 || d_ex_reg.rd == d_ex_next.rs2));
 always_comb begin
-    next_pc = pc + 32'd4; 
-
     inst_mem_req.addr    = pc;
-    inst_mem_req.valid   = !reset && !load_use_stall; 
+    inst_mem_req.valid   = !reset;
     inst_mem_req.do_read = 4'b1111;
 
-    f_d_next.pc    = pc_requested;
-    f_d_next.inst  = (inst_mem_rsp.valid && !load_use_stall) ? inst_mem_rsp.data : noop;
-    f_d_next.valid = inst_mem_rsp.valid && !reset && !load_use_stall;
+    if (load_use_stall) begin
+        next_pc = pc;
+    end else if (branch_flush) begin
+        next_pc = ex_mem_next.next_pc;
+    end else begin //generic case
+        next_pc = pc + 32'd4; 
+    end
+    f_d_next.pc = inst_mem_rsp.addr;
+    f_d_next.inst  = inst_mem_rsp.data;
+    f_d_next.valid = inst_mem_rsp.valid;
 end
 
 //decode
@@ -254,59 +259,35 @@ always_ff @(posedge clk) begin
         ex_mem_reg <= '0;
         mem_wb_reg <= '0;
         pc         <= reset_pc;
-        pc_requested <= reset_pc;
         instruction_count <= 0;
         for (int i = 0; i < 32; i++) begin
             reg_file[i] <= 32'd0;
         end
     end else begin
         //branch flush
-        if (d_ex_reg.valid && ex_mem_next.next_pc != d_ex_reg.pc + 4) begin
+        if (branch_flush) begin
             f_d_reg    <= '0;
             d_ex_reg   <= '0;
-            ex_mem_reg <= ex_mem_next;
-            mem_wb_reg <= mem_wb_next;
-            pc <= ex_mem_next.next_pc; // next pc is just pc + 4 always, so this is needed
-            pc_requested <= pc;
         //memory stall
         end else if (load_use_stall) begin
             f_d_reg    <= f_d_reg;
             d_ex_reg   <= '0;
-            ex_mem_reg <= ex_mem_next;
-            mem_wb_reg <= mem_wb_next;
-            pc <= pc_requested + 4; // hold pc properly
-            pc_requested <= pc_requested;
         //normal
         end else begin
-            f_d_reg    <= f_d_next.valid ? f_d_next : f_d_reg; //recover from mem stall
+            f_d_reg    <= f_d_next.valid ? f_d_next : '0; //recover from mem stall
             d_ex_reg   <= d_ex_next;
-            ex_mem_reg <= ex_mem_next;
-            mem_wb_reg <= mem_wb_next;
-            //speculative jump
-            pc <= next_pc;
-            pc_requested <= pc;
         end
+        ex_mem_reg <= ex_mem_next;
+        mem_wb_reg <= mem_wb_next;
+        pc <= next_pc;
         //reg_data();
         //debug();
         //debug_flag();
         if (mem_wb_reg.valid)
             instruction_count <= instruction_count + 1;
-        if (d_ex_reg.valid && ex_mem_next.next_pc != d_ex_reg.pc + 4)
-            instruction_count <= instruction_count - 2;
     end
 end
 
-always_ff @(posedge clk) begin
-    if (mem_wb_reg.valid && mem_wb_reg.op_q == q_load)
-        $display("LOAD WB: addr=%h, raw_data=%h, writeback_data=%h",
-            mem_wb_reg.exec_result, data_mem_rsp.data, writeback_data);
-    $display("PC=%h pc_req=%h | FD=%h(%b) | DE op=%b rd=%d wbv=%b valid=%b | EM valid=%b | MW valid=%b",
-        pc, pc_requested,
-        f_d_reg.inst, f_d_reg.valid,
-        d_ex_reg.op_q, d_ex_reg.rd, d_ex_reg.writeback_valid, d_ex_reg.valid,
-        ex_mem_reg.valid,
-        mem_wb_reg.valid);
-end
 
 
 
