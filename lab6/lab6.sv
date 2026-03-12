@@ -289,19 +289,38 @@ always_ff @(posedge clk) begin
             mem_wb_reg <= mem_wb_next;
             pc <= next_pc;
         end
-        if (mem_wb_reg.valid)
-            instruction_count <= instruction_count + 1;
+        if (mem_wb_reg.valid) instruction_count <= instruction_count + 1;
     end
 end
 
 function automatic void trace_pipeline();
-    $display("Cycle: %0d | PC: %h | Stall: %b | Flush: %b", 
-              instruction_count, pc, load_use_stall, branch_flush);
-    $display("  [F/D] Inst: %h | Valid: %b", f_d_reg.inst, f_d_reg.valid);
-    $display("  [D/E] Op: %s | RD: x%0d | Valid: %b", d_ex_reg.op_q.name(), d_ex_reg.rd, d_ex_reg.valid);
-    $display("  [E/M] Res: %h | RD: x%0d | Valid: %b", ex_mem_reg.exec_result, ex_mem_reg.rd, ex_mem_reg.valid);
-    $display("  [M/W] Data: %h | RD: x%0d | Valid: %b", writeback_data, mem_wb_reg.rd, mem_wb_reg.valid);
     $display("-------------------------------------------------------------------");
+    // Changed instruction_count to %0d and pc to %h for readability
+    $display("Cycle: %0d | PC: %h | Stall: %b | Flush: %b", instruction_count, pc, load_use_stall, branch_flush);
+    
+    // [F/D] Stage
+    $display("  [F/D] Inst: %h | Valid: %b", f_d_reg.inst, f_d_reg.valid);
+    
+    // [D/E] Stage 
+    $display("  [D/E] Op: %s | RD: x%0d | Valid: %b", d_ex_reg.op_q.name(), d_ex_reg.rd, d_ex_reg.valid);
+    
+    // [E/M] Stage - Fixed .result to .exec_result
+    $display("  [E/M] Res: %h | RD: x%0d | Valid: %b", ex_mem_reg.exec_result, ex_mem_reg.rd, ex_mem_reg.valid);
+
+    // --- ON-THE-FLY MEMORY MONITOR ---
+    // Fixed .result to .exec_result and .rs2_val to .rd2
+    if (ex_mem_reg.valid && ex_mem_reg.op_q == q_store) begin
+        $display("  >>> MEMORY WRITE: [%h] = %h (from rd2)", ex_mem_reg.exec_result, ex_mem_reg.rd2);
+    end else if (ex_mem_reg.valid && ex_mem_reg.op_q == q_load) begin
+        $display("  >>> MEMORY READ:  [%h]", ex_mem_reg.exec_result);
+    end
+
+    // [M/W] Stage - Fixed .data to .exec_result (based on your buffer_mem_to_writeback struct)
+    $display("  [M/W] Data: %h | RD: x%0d | Valid: %b", mem_wb_reg.exec_result, mem_wb_reg.rd, mem_wb_reg.valid);
+    if (ex_mem_reg.valid && ex_mem_reg.op_q == q_store) begin
+    $display("  DEBUG: Raw rd2 in reg: %h | Shuffled data out: %h", 
+              ex_mem_reg.rd2, data_mem_req.data);
+end
 endfunction
 
 function automatic void reg_data();
