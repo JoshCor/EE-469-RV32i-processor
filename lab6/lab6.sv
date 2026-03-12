@@ -104,10 +104,10 @@ tag             rs2_tag;
 logic           load_use_stall;
 logic           branch_flush;
 
-assign load_use_stall = (d_ex_reg.valid && d_ex_reg.op_q == q_load && d_ex_reg.writeback_valid &&
-                         d_ex_reg.rd != 0 &&
-                        (d_ex_reg.rd == d_ex_next.rs1 || d_ex_reg.rd == d_ex_next.rs2));
-assign branch_flush = (d_ex_reg.valid && ex_mem_next.next_pc != d_ex_reg.pc + 4);
+assign load_use_stall = (ex_mem_reg.valid && ex_mem_reg.op_q == q_load &&
+                            ex_mem_reg.rd != 0 &&
+                           (ex_mem_reg.rd == d_ex_reg.rs1 || ex_mem_reg.rd == d_ex_reg.rs2));
+assign branch_flush = (d_ex_reg.valid && ex_mem_next.next_pc != d_ex_reg.pc + 4) && !load_use_stall;
 
 
 //fetch
@@ -268,32 +268,43 @@ always_ff @(posedge clk) begin
         if (branch_flush) begin
             f_d_reg    <= '0;
             d_ex_reg   <= '0;
+            ex_mem_reg <= ex_mem_next;
+            mem_wb_reg <= mem_wb_next;
+            pc <= next_pc;
         //memory stall
         end else if (load_use_stall) begin
             f_d_reg    <= f_d_reg;
-            d_ex_reg   <= '0;
+            d_ex_reg   <= d_ex_reg;
+            ex_mem_reg <= ex_mem_next;
+            ex_mem_reg.valid <= 0;
+            mem_wb_reg <= mem_wb_next;
+            pc <= pc;
         //normal
         end else begin
             f_d_reg    <= f_d_next.valid ? f_d_next : '0; //recover from mem stall
             d_ex_reg   <= d_ex_next;
+            ex_mem_reg <= ex_mem_next;
+            mem_wb_reg <= mem_wb_next;
+            pc <= next_pc;
         end
-        ex_mem_reg <= ex_mem_next;
-        mem_wb_reg <= mem_wb_next;
-        pc <= next_pc;
+        
         //reg_data();
         //debug();
         //debug_flag();
         if (mem_wb_reg.valid)
             instruction_count <= instruction_count + 1;
     end
+    trace_pipeline();
 end
 
-
-
-
-function automatic void debug();
-    $display("WB Stage: PC=%h, RD=%d, Op=%b, Data=%h, WB_Valid=%b", 
-          mem_wb_reg.pc, mem_wb_reg.rd, mem_wb_reg.op_q, writeback_data, mem_wb_reg.writeback_valid);
+function automatic void trace_pipeline();
+    $display("Cycle: %0d | PC: %h | Stall: %b | Flush: %b", 
+              instruction_count, pc, load_use_stall, branch_flush);
+    $display("  [F/D] Inst: %h | Valid: %b", f_d_reg.inst, f_d_reg.valid);
+    $display("  [D/E] Op: %s | RD: x%0d | Valid: %b", d_ex_reg.op_q.name(), d_ex_reg.rd, d_ex_reg.valid);
+    $display("  [E/M] Res: %h | RD: x%0d | Valid: %b", ex_mem_reg.exec_result, ex_mem_reg.rd, ex_mem_reg.valid);
+    $display("  [M/W] Data: %h | RD: x%0d | Valid: %b", writeback_data, mem_wb_reg.rd, mem_wb_reg.valid);
+    $display("-------------------------------------------------------------------");
 endfunction
 
 function automatic void reg_data();
