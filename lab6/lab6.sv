@@ -31,7 +31,7 @@ module core(
     ,input  memory_io_rsp   data_mem_rsp
     );
 
-localparam instr32 noop = 32'h00000013;
+localparam instr32 nop = 32'h00000013;
 
 //fetch to decode buffer
 typedef struct packed {
@@ -104,9 +104,9 @@ tag             rs2_tag;
 logic           load_use_stall;
 logic           branch_flush;
 
-assign load_use_stall = (ex_mem_reg.valid && ex_mem_reg.op_q == q_load &&
-                            ex_mem_reg.rd != 0 &&
-                           (ex_mem_reg.rd == d_ex_reg.rs1 || ex_mem_reg.rd == d_ex_reg.rs2));
+assign load_use_stall = (d_ex_reg.valid && d_ex_reg.op_q == q_load &&
+                            d_ex_reg.rd != 0 &&
+                           (d_ex_reg.rd == rs1_tag || d_ex_reg.rd == rs2_tag));
 assign branch_flush = (d_ex_reg.valid && ex_mem_next.next_pc != d_ex_reg.pc + 4) && !load_use_stall;
 
 
@@ -267,34 +267,31 @@ always_ff @(posedge clk) begin
         //branch flush
         if (branch_flush) begin
             f_d_reg    <= '0;
+            f_d_reg.inst <= nop;
             d_ex_reg   <= '0;
+            d_ex_reg.op_q   <= q_op_imm;
             ex_mem_reg <= ex_mem_next;
             mem_wb_reg <= mem_wb_next;
             pc <= next_pc;
         //memory stall
         end else if (load_use_stall) begin
             f_d_reg    <= f_d_reg;
-            d_ex_reg   <= d_ex_reg;
+            d_ex_reg   <= '0;
+            d_ex_reg.op_q   <= q_op_imm;
             ex_mem_reg <= ex_mem_next;
-            ex_mem_reg.valid <= 0;
             mem_wb_reg <= mem_wb_next;
             pc <= pc;
         //normal
         end else begin
-            f_d_reg    <= f_d_next.valid ? f_d_next : '0; //recover from mem stall
+            f_d_reg    <= f_d_next; //recover from mem stall
             d_ex_reg   <= d_ex_next;
             ex_mem_reg <= ex_mem_next;
             mem_wb_reg <= mem_wb_next;
             pc <= next_pc;
         end
-        
-        //reg_data();
-        //debug();
-        //debug_flag();
         if (mem_wb_reg.valid)
             instruction_count <= instruction_count + 1;
     end
-    trace_pipeline();
 end
 
 function automatic void trace_pipeline();
