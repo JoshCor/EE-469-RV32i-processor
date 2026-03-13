@@ -219,6 +219,9 @@ always_comb begin
             data_mem_req.do_read  = shuffle_store_mask(memory_mask(cast_to_memory_op(ex_mem_reg.f3)), ex_mem_reg.exec_result);
         end
     end
+    if (data_mem_rsp.valid) begin
+            data_mem_req.valid = 1'b0;
+    end
 
     mem_wb_next.rd              = ex_mem_reg.rd;
     mem_wb_next.writeback_valid = ex_mem_reg.writeback_valid;
@@ -295,37 +298,10 @@ always_ff @(posedge clk) begin
 end
 
 always_ff @(posedge clk) begin
-    if (mem_wb_reg.valid && mem_wb_reg.op_q == q_store && mem_wb_reg.exec_result == 0x0002FFF8) begin
+    if (mem_wb_reg.valid && mem_wb_reg.op_q == q_store && mem_wb_reg.exec_result == 'h0002FFF8) begin
         $display("--print store-- %d", mem_wb_reg.pc);
-    end
+    end 
 end
-
-function automatic void trace_pipeline();
-    $display("-------------------------------------------------------------------");
-    $display("Cycle: %0d | PC: %h | Stall: %b | Flush: %b", instruction_count, pc, load_use_stall, branch_flush);
-    
-    // [F/D] Stage
-    $display("  [F/D] Inst: %h | Valid: %b", f_d_reg.inst, f_d_reg.valid);
-    
-    // [D/E] Stage - ADDED rs1/rs2 to see why stalls should happen
-    $display("  [D/E] Op: %s | RD: x%0d | RS1: x%0d | RS2: x%0d | Valid: %b", 
-             d_ex_reg.op_q.name(), d_ex_reg.rd, d_ex_reg.rs1, d_ex_reg.rs2, d_ex_reg.valid);
-    
-
-    // [E/M] Stage
-    $display("  [E/M] Res: %h | RD: x%0d | Valid: %b", ex_mem_reg.exec_result, ex_mem_reg.rd, ex_mem_reg.valid);
-
-    // MEMORY MONITOR
-    if (ex_mem_reg.valid && ex_mem_reg.op_q == q_store) begin
-        $display("  >>> MEMORY WRITE: [%h] = %h | Shuffled: %h", 
-                 ex_mem_reg.exec_result, ex_mem_reg.rd2, data_mem_req.data);
-    end else if (ex_mem_reg.valid && ex_mem_reg.op_q == q_load) begin
-        $display("  >>> MEMORY READ:  [%h]", ex_mem_reg.exec_result);
-    end
-
-    // [M/W] Stage
-    $display("  [M/W] Data: %h | RD: x%0d | Valid: %b", mem_wb_reg.exec_result, mem_wb_reg.rd, mem_wb_reg.valid);
-endfunction
 
 function automatic void reg_data();
     string name [32] = '{
@@ -342,8 +318,6 @@ function automatic void reg_data();
     end
     $display("============================");
 endfunction
-
-
 
 endmodule
 `endif

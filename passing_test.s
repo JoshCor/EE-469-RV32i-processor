@@ -6,6 +6,8 @@ _start:
     li  x30, 0x0002FFFC  # Halt address
     li  x28, 80          # 'P' (pass)
     li  x29, 70          # 'F' (fail)
+    li  x27, 71          # 'G' (stall)
+    li  x26, 72          # 'H' (load nop)
 
     # -----------------------------------------------
     # TEST 1: EX->EX bypass (back-to-back RAW)
@@ -56,7 +58,7 @@ _start:
     lw   x8, 0(x7)       # load 80
     add  x9, x8, x0      # RAW: stall inserted, then forward
     bne  x9, x28, fail
-    sw   x29, 0(x5)      # 'P'
+    sw   x27, 0(x5)      # 'G'
 
     # -----------------------------------------------
     # TEST 6: Load result forwarded after 1 NOP
@@ -67,7 +69,7 @@ _start:
     nop
     add  x9, x8, x0      # MEM/WB->EX forward of load result
     bne  x9, x28, fail
-    sw   x28, 0(x5)      # 'P'
+    sw   x26, 0(x5)      # 'H'
 
     # -----------------------------------------------
     # TEST 7: Branch using forwarded value
