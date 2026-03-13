@@ -56,7 +56,7 @@ _start:
     lw   x8, 0(x7)       # load 80
     add  x9, x8, x0      # RAW: stall inserted, then forward
     bne  x9, x28, fail
-    sw   x28, 0(x5)      # 'P'
+    sw   x29, 0(x5)      # 'P'
 
     # -----------------------------------------------
     # TEST 6: Load result forwarded after 1 NOP
